@@ -1156,9 +1156,61 @@ svg.leaflet-image-layer.leaflet-interactive path {
 
   window.MailApp = {sendEmail:function(){}};
 
+  /*
+   * UrlFetchApp versi demo.
+   *
+   * Hanya SATU alamat yang diizinkan: endpoint resmi Gemini. Daftar-izin ini
+   * disengaja. Berkas demo ini berpindah tangan lewat surel dan WhatsApp; bila
+   * fungsi ini bisa memanggil alamat apa pun, berkas yang sudah diubah orang
+   * lain bisa mengirim kunci API ke mana saja. Alamat lain tetap ditolak.
+   *
+   * Permintaannya sinkron (XHR blocking) karena Code.gs memang menulis
+   * UrlFetchApp.fetch sebagai pemanggilan yang mengembalikan nilai, persis
+   * seperti di Apps Script. Halaman berhenti sejenak selama Gemini menjawab —
+   * dapat diterima untuk demo, dan membuat kode server yang diuji benar-benar
+   * sama dengan yang berjalan di Apps Script.
+   */
+  /* Dibaca aplikasi untuk menampilkan peringatan khusus demo. */
+  window.WN_DEMO = true;
+
+  var IZIN_ALAMAT = 'https://generativelanguage.googleapis.com/';
+
   window.UrlFetchApp = {
-    fetch:function(){
-      throw new Error('Demo berjalan tanpa jaringan luar. Fitur ini memerlukan pemasangan sungguhan.');
+    fetch:function(url, opsi){
+      url = String(url || '');
+      opsi = opsi || {};
+
+      if(url.indexOf(IZIN_ALAMAT) !== 0){
+        throw new Error('Demo hanya diizinkan menghubungi server Gemini. ' +
+                        'Fitur ini memerlukan pemasangan sungguhan.');
+      }
+
+      var xhr = new XMLHttpRequest();
+      xhr.open(String(opsi.method || 'get').toUpperCase(), url, false);  // sinkron
+      if(opsi.contentType) xhr.setRequestHeader('Content-Type', opsi.contentType);
+      if(opsi.headers){
+        for(var k in opsi.headers){
+          if(opsi.headers.hasOwnProperty(k)) xhr.setRequestHeader(k, opsi.headers[k]);
+        }
+      }
+
+      try{
+        xhr.send(opsi.payload || null);
+      }catch(e){
+        /* Peramban menyembunyikan sebab pastinya demi keamanan. Yang paling
+           sering: berkas demo dibuka langsung dari penyimpanan (file://),
+           sehingga asal permintaannya "null" dan ditolak CORS. */
+        throw new Error('Permintaan ke Gemini diblokir peramban. Bila demo ini dibuka ' +
+                        'langsung dari berkas (alamatnya diawali file://), coba buka ' +
+                        'lewat alamat http/https — misalnya versi GitHub Pages-nya.');
+      }
+
+      var kode = xhr.status, isi = xhr.responseText;
+      return {
+        getResponseCode:function(){ return kode; },
+        getContentText:function(){ return isi; },
+        getAllHeaders:function(){ return {}; }
+      };
     }
   };
 
@@ -1790,7 +1842,7 @@ function cekLisensi() {
  * ============================================================ */
 
 var APP_NAME = 'WargaNet RT/RW';
-var APP_VERSION = '2.9.0';
+var APP_VERSION = '2.9.1';
 var APP_BUILD = '2026-11-11';          // tanggal paket ini dirakit
 
 /** Versi dokumen hukum; dinaikkan hanya bila isinya benar-benar berubah. */
@@ -2270,20 +2322,37 @@ function apiAiSimpanKunci(p) {
   }
 
   /* Pemeriksaan bentuk seadanya — menangkap salah tempel yang paling sering:
-     orang menempel seluruh baris "GEMINI_API_KEY=AIza..." atau URL. */
+     orang menempel seluruh baris "GEMINI_API_KEY=AQ...." atau menempel URL.
+     Sengaja longgar: Google pernah mengganti format kunci, dan aturan yang
+     terlalu ketat akan menolak kunci sah di kemudian hari. */
   if (key.indexOf(' ') >= 0 || key.length < 20) {
-    throw new Error('Kunci tampak tidak utuh. Tempel hanya kuncinya saja ' +
-                    '(biasanya diawali "AIza" dan tanpa spasi).');
+    throw new Error('Kunci tampak tidak utuh. Tempel hanya kuncinya saja, tanpa spasi ' +
+                    'dan tanpa tulisan "GEMINI_API_KEY=" di depannya.');
+  }
+  if (key.indexOf('=') >= 0 || /^https?:/i.test(key)) {
+    throw new Error('Yang tertempel sepertinya baris pengaturan atau alamat web, bukan kuncinya.');
   }
 
   props.setProperty('GEMINI_API_KEY', key);
   props.deleteProperty('GEMINI_MODEL_AKTIF');   // deteksi ulang dengan kunci baru
   logAction(a.nama, a.peran, 'Audit System', 'Simpan Kunci AI',
             'Kunci API Gemini diperbarui lewat aplikasi.');
+
+  /*
+   * Kunci lama berawalan "AIza" sudah dipensiunkan Google sejak September 2026.
+   * Kunci seperti itu tetap disimpan — siapa tahu akun tertentu masih dilayani —
+   * tetapi pemiliknya diberi tahu sebabnya sebelum menebak-nebak sendiri.
+   */
+  var usang = key.indexOf('AIza') === 0;
   return {
     terpasang: true,
     kunciSamar: samarkanKunci(key),
-    pesan: 'Kunci tersimpan. Tekan "Uji Sambungan" untuk memastikannya bekerja.'
+    usang: usang,
+    pesan: usang
+      ? 'Kunci tersimpan, tetapi awalannya "AIza" — format lama yang dipensiunkan ' +
+        'Google sejak September 2026 dan besar kemungkinan ditolak. Kunci baru ' +
+        'berawalan "AQ." dan bisa dibuat di aistudio.google.com/apikey.'
+      : 'Kunci tersimpan. Tekan "Uji Sambungan" untuk memastikannya bekerja.'
   };
 }
 
@@ -3341,6 +3410,7 @@ function simpanGeminiApiKey() {
   var ui = SpreadsheetApp.getUi();
   var res = ui.prompt('Gemini API Key',
     'Tempel Gemini API Key Anda (dari https://aistudio.google.com/apikey).\n' +
+    'Kunci terbaru berawalan "AQ." — yang berawalan "AIza" sudah dipensiunkan.\n' +
     'Kosongkan lalu OK untuk menonaktifkan fitur AI.\n\n' +
     'Setelah tersimpan, jalankan menu Cek Koneksi Gemini untuk memastikan ' +
     'key dan modelnya benar-benar bekerja.', ui.ButtonSet.OK_CANCEL);
@@ -3420,9 +3490,17 @@ function pesanGalatGemini(code, teks, model) {
     detail = String(teks || '').slice(0, 200);
   }
 
-  if (code === 400 && /API key not valid|API_KEY_INVALID/i.test(teks)) {
-    return 'API Key Gemini tidak valid. Buat key baru di https://aistudio.google.com/apikey, ' +
-           'lalu simpan lewat menu WargaNet ▸ Setel Gemini API Key.';
+  if ((code === 400 || code === 401) && /API key not valid|API_KEY_INVALID|UNAUTHENTICATED/i.test(teks)) {
+    var pesan = 'API Key Gemini ditolak. ';
+    if (String(getGeminiKey()).indexOf('AIza') === 0) {
+      pesan += 'Kunci yang terpasang berawalan "AIza" — format lama yang sudah ' +
+               'dipensiunkan Google sejak September 2026. Buat kunci baru ' +
+               '(berawalan "AQ.") di https://aistudio.google.com/apikey. ';
+    } else {
+      pesan += 'Buat kunci baru di https://aistudio.google.com/apikey. ';
+    }
+    return pesan + 'Simpan lewat Pengaturan ▸ Kunci & Model AI, atau menu ' +
+           'WargaNet ▸ Setel Gemini API Key.';
   }
   if (code === 400) return 'Permintaan ditolak Gemini: ' + detail;
   if (code === 403) {
@@ -3478,9 +3556,18 @@ function geminiGenerate(prompt, systemInstruction, jsonMode) {
   if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
   if (jsonMode) body.generationConfig = { responseMimeType: 'application/json' };
 
+  /*
+   * Kunci dikirim lewat header x-goog-api-key, bukan ?key= di alamat.
+   *
+   * Dua alasan. Pertama, alamat lengkap ikut tercatat di log server, riwayat,
+   * dan pesan galat — rahasia tidak pantas berada di sana. Kedua, inilah cara
+   * yang dipakai SDK resmi Google dan yang pasti bekerja untuk kunci format
+   * baru (AQ.).
+   */
   var opsi = {
     method: 'post',
     contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
     payload: JSON.stringify(body),
     muteHttpExceptions: true
   };
@@ -3492,8 +3579,7 @@ function geminiGenerate(prompt, systemInstruction, jsonMode) {
     var model = daftar[i];
     var res;
     try {
-      res = UrlFetchApp.fetch(GEMINI_ENDPOINT + model + ':generateContent?key=' +
-                              encodeURIComponent(key), opsi);
+      res = UrlFetchApp.fetch(GEMINI_ENDPOINT + model + ':generateContent', opsi);
     } catch (e) {
       throw new Error('Tidak dapat menghubungi server Gemini: ' + e.message);
     }
@@ -11562,6 +11648,14 @@ function kartuAi(){
   return '<div class="card flat" style="background:#f5f3ff"><b style="font-size:12px">✨ Kunci &amp; Model AI</b>'+
     '<div class="sub" style="margin-top:4px">Fitur AI memakai Gemini. Kunci biasanya dipasang lewat '+
     '<b>Apps Script ▸ Project Settings ▸ Script Properties</b>; bila terlewat, pasang di sini.</div>'+
+    (window.WN_DEMO
+      ? '<div class="card flat" style="margin-top:8px;background:#fee2e2">'+
+        '<b style="font-size:11.5px">⚠️ INI VERSI DEMO</b>'+
+        '<div class="sub" style="margin-top:3px">Kunci yang Anda tempel di sini hanya tersimpan '+
+        'di memori halaman dan <b>hilang begitu halaman ditutup atau dimuat ulang</b> — tidak '+
+        'pernah ditulis ke penyimpanan perangkat. Permintaan dikirim langsung dari peramban ini '+
+        'ke server Gemini. <b>Jangan tempel kunci Anda di perangkat milik orang lain.</b></div></div>'
+      : '')+
     '<div id="aiKotak" style="margin-top:8px"><div class="sub">⏳ Memeriksa…</div></div>'+
   '</div>';
 }
@@ -11592,12 +11686,17 @@ function gambarKartuAi(){
         (r.terpasang ? 'Kunci: <code>'+esc(r.kunciSamar)+'</code>' : 'Fitur AI sedang nonaktif.')+
         (r.modelAktif ? '<br>Model yang terakhir berhasil: <b>'+esc(r.modelAktif)+'</b>' : '')+
       '</div>'+
+      (r.usang ? '<div class="sub" style="margin-top:6px;color:#b91c1c"><b>Format kunci sudah usang.</b> '+
+        'Awalan <code>AIza</code> dipensiunkan Google sejak September 2026. Buat kunci baru '+
+        'berawalan <code>AQ.</code> lalu tempel di bawah.</div>' : '')+
     '</div>'+
     '<label class="f">Kunci API Gemini</label>'+
     '<input class="inp" id="aiKunci" type="password" autocomplete="off" '+
-      'placeholder="'+(r.terpasang?'biarkan kosong bila tidak diubah':'tempel kunci di sini (AIza…)')+'">'+
+      'placeholder="'+(r.terpasang?'biarkan kosong bila tidak diubah':'tempel kunci di sini (AQ.…)')+'">'+
     '<div class="sub" style="margin-top:4px">Ambil kunci gratis di '+
       '<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>. '+
+      'Kunci terbaru berawalan <code>AQ.</code> — kunci lama berawalan <code>AIza</code> '+
+      'sudah dipensiunkan Google sejak September 2026 dan akan ditolak. '+
       'Pasang juga batas anggaran di Google Cloud agar salah pakai tidak menjadi tagihan.</div>'+
 
     '<label class="f" style="margin-top:10px">Model AI</label>'+
